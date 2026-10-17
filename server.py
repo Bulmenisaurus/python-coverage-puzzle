@@ -232,6 +232,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {
                 "stdout": stdout.decode("utf-8", "replace"),
                 "stderr": stderr.decode("utf-8", "replace"),
+                "hit": data.get("hit", []),
                 "covered": covered,
                 "uncovered": uncovered,
                 "stats": stats(covered, uncovered),

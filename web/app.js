@@ -1,9 +1,11 @@
 const DRAFT_KEY = "puzzle-draft";
+const IGNORE_KEY = "puzzle-ignore-baseline";
 const DEFAULT_CODE = "a = [1, 2, 3]\na.append(4)\n";
 
 const scoreEl = document.getElementById("score");
 const outputEl = document.getElementById("output");
 const runButton = document.getElementById("run");
+const ignoreBaseline = document.getElementById("ignore-baseline");
 
 const editor = CodeMirror.fromTextArea(document.getElementById("editor"), {
   mode: "python",
@@ -26,10 +28,12 @@ const view = CodeMirror.fromTextArea(document.getElementById("source"), {
 let targets = [];
 let targetLookup = new Set();
 let baseline = new Set();
-let covered = new Set();
+let runHit = new Set();
 let lineClass = [];
 let lastStats = null;
 let running = false;
+
+ignoreBaseline.checked = localStorage.getItem(IGNORE_KEY) === "1";
 
 editor.setValue(localStorage.getItem(DRAFT_KEY) ?? DEFAULT_CODE);
 editor.on("change", () => localStorage.setItem(DRAFT_KEY, editor.getValue()));
@@ -40,13 +44,30 @@ function showOutput(text) {
 
 function formatScore(stats) {
   if (!stats) return "";
-  return `${stats.covered} / ${stats.interesting} interesting (${stats.coverage.toFixed(1)}%)`;
+  const noun = ignoreBaseline.checked ? "lines" : "interesting";
+  return `${stats.covered} / ${stats.interesting} ${noun} (${stats.coverage.toFixed(1)}%)`;
+}
+
+function countsBaseline(line) {
+  return !ignoreBaseline.checked && baseline.has(line);
+}
+
+function computeStats() {
+  let interesting = 0;
+  let covered = 0;
+  for (const line of targets) {
+    if (countsBaseline(line)) continue;
+    interesting++;
+    if (runHit.has(line)) covered++;
+  }
+  const coverage = interesting ? (100 * covered) / interesting : 0;
+  return { covered, interesting, coverage };
 }
 
 function uncoveredLines() {
   const lines = [];
   for (const line of targets) {
-    if (!baseline.has(line) && !covered.has(line)) lines.push(line);
+    if (!countsBaseline(line) && !runHit.has(line)) lines.push(line);
   }
   return lines;
 }
@@ -57,8 +78,8 @@ function paint() {
     for (let i = 0; i < count; i++) {
       const lineNo = i + 1;
       let cls = "line-out";
-      if (targetLookup.has(lineNo) && !baseline.has(lineNo)) {
-        cls = covered.has(lineNo) ? "line-hit" : "line-miss";
+      if (targetLookup.has(lineNo) && !countsBaseline(lineNo)) {
+        cls = runHit.has(lineNo) ? "line-hit" : "line-miss";
       }
       if (lineClass[i] === cls) continue;
       for (const where of ["background", "text", "gutter"]) {
@@ -70,10 +91,10 @@ function paint() {
   });
 }
 
-function applyCoverage(nextCovered, stats) {
-  covered = new Set(nextCovered);
-  lastStats = stats;
-  scoreEl.textContent = formatScore(stats);
+function applyCoverage(hitLines) {
+  runHit = new Set(hitLines);
+  lastStats = computeStats();
+  scoreEl.textContent = formatScore(lastStats);
   paint();
 }
 
@@ -110,7 +131,7 @@ async function loadPuzzle() {
   targetLookup = new Set(targets);
   baseline = new Set(data.baseline_hit);
   lineClass = [];
-  applyCoverage(data.covered, data.stats);
+  applyCoverage([]);
   showOutput("Grey lines are not gcov code, or already hit by baselines/. Red lines are the puzzle.");
 }
 
@@ -132,7 +153,7 @@ async function run() {
     if (data.stdout) parts.push(data.stdout.replace(/\s+$/, ""));
     if (data.stderr) parts.push(data.stderr.replace(/\s+$/, ""));
     showOutput(parts.filter(Boolean).join("\n\n") || "(no output)");
-    if (response.ok) applyCoverage(data.covered, data.stats);
+    if (response.ok) applyCoverage(data.hit ?? data.covered ?? []);
     else scoreEl.textContent = lastStats ? formatScore(lastStats) : "run failed";
   } catch (err) {
     showOutput(String(err));
@@ -142,6 +163,14 @@ async function run() {
     runButton.disabled = false;
   }
 }
+
+ignoreBaseline.addEventListener("change", () => {
+  localStorage.setItem(IGNORE_KEY, ignoreBaseline.checked ? "1" : "0");
+  if (!targets.length) return;
+  lastStats = computeStats();
+  scoreEl.textContent = formatScore(lastStats);
+  paint();
+});
 
 document.getElementById("run").addEventListener("click", run);
 document.getElementById("prev").addEventListener("click", () => jump(-1));
